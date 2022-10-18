@@ -35,17 +35,28 @@ solar_cf = [0, 0, 0, 0, 0, 0, 0.20, 0.57, 0.80, 0.93, 0.99, 0.99, 0.85, 0.99, 0.
 ## Problem 1.1
 Decision Variables:
 
-x(g) installed capacity (MW) of generator type g
-y(g,t) production (MW) from generator type g in period t
+x(g) installed capacity (MW) of generator type g (based on generator type) 
 
+y(g,t) production (MW) from generator type g in period t (units are hours, so production is based on the utility and the hour)
+ 
+n(t) non-served energy values (MW)
 
 ## Problem 1.2
-The objective is to minimize the total cost of investment and operation of the expanded generation capacity
+The objective is to minimize the total cost of investment and operation of the expanded generation capacity.
 
-min Z = investment cost + operating cost 
-= 
+min Z (function of x,y,n) = investment cost + operating cost + non-served energy cost
+
+= sum of investment cost column * capacity (x) + sum of operating cost column * production (y) + sum of non-served energy penalty * non served energy (n)
 
 ## Problem 1.3
+
+Generators cannot produce more than their installed capacity and availability, and need to serve load in all hours of the day. 
+This is why y[g,t] <=avail[g,t]*x[g]. The energy production plus the non served energy must be equal to the demand as seen above. Hence, sum(y[:,t]) + n[t] == demand[t].
+
+
+Variables also have to be greater than or equal to 0, becuase you cannot have negative production, capacity, or non-served energy. Hence x[G]>=0, y[G,T] = 0
+
+This is a complete set of constraints for this linear program because we defined non negativity and required the demand to be met. 
 
 ## Problem 1.4
 
@@ -54,55 +65,176 @@ min Z = investment cost + operating cost
 using JuMP
 using HiGHS
 
+nsec = 1000; # nse cost [$/MWH]
+
 gen_model = Model(HiGHS.Optimizer)
-generators = ["geo", "coal", "ccgt", "ct", "wind", "solar"]
-G = 1:length(generators)
-T = 1:length(hours)
+generators = ["geo", "coal", "ccgt", "ct", "wind", "solar"];
+# hours = ["hour 1", "hour 2", hour etc etc ]
+G = 1:length(generators);
+T = 1:length(hours);
 
-@variable(gen_model,x[G]>=0
-@variable(gen_model,y[G,T]>=0)
-@objective(gen_model, Min, [(investment_cost)'*x + sum((op_cost)'.*y))
+@variable(gen_model,x[G]>=0);
+@variable(gen_model,y[G,T]>=0);
+@variable(gen_model,n[T]>=0);
+@objective(gen_model, Min, sum(investment_cost.*x) + 365*(sum(op_cost.*y)+ sum(nsec.*n)));
 
-avail = zeros(6,24)
-avail[1,:] = thermal_cf[1]
-avail[2,:] = thermal_cf[2]
-avail[3,:] = thermal_cf[3]
-avail[4,:] = thermal_cf[4]
-avail[5,:] = wind_cf
-avail[6,:] = solar_cf
-avail= avail'
- 
-@constraint(gen_model, availability[g in G, t in T], y[g,t] <=avail[g,t]*x[g])
-@constraint(gen_model, load[t in T], sum(y[:,t]) == demand[t])
+avail = zeros(6,24);
+avail[1,:] .= thermal_cf[1];
+avail[2,:] .= thermal_cf[2];
+avail[3,:] .= thermal_cf[3];
+avail[4,:] .= thermal_cf[4];
+avail[5,:] = wind_cf;
+avail[6,:] = solar_cf;
 
-print(gen_model)
+@constraint(gen_model, availability[g in G, t in T], y[g,t] <=avail[g,t]*x[g]);
+@constraint(gen_model, load[t in T], sum(y[:,t]) + n[t] == demand[t]);
+set_silent(gen_model)
 
 ```
 
-
 ## Problem 1.5
-optimize 
+```julia
 
-slides 24-26, 28
+optimize!(gen_model)
+objective_value(gen_model)
+value.(x)
+value.(n)
 
+```
+Optimal solution: total cost: $912 M
+Utility should build: 0 MW Geothermal, 0 MW Coal, 1704 MW CCGT, 881 MW CT, 1238 MW wind, 2728 MW Solar
+Non served energy: 0 MW
 
 ## Problem 1.6
+
+plot value.y
+
+```julia
+
+using Plots
+
+gen = value.(y).data
+p = plot(gen', label=permutedims(generators), xlabel = "hour", ylabel="generated electricity (MW)")
+
+areaplot(gen', label=permutedims(generators), xlabel = "hour", ylabel="generated electricity (MW)");
+plot!(demand, color=:red, label="demand", linestyle=:dash)
+
+```
+Takeaways: In the early and late hours of the day, CCGT is utilized the most. By the time ~8 am hits (and people start their day),
+solar starts to be used at a large rate. When people return home after work, solar drops again and CCGT and CT take up the most generation. 
 
 # Problem 2
 
 ## Problem 2.1
-We need a new function objective, as well as a new constraint concerning the co2 emmissions, 
-and therefore a new variable z for co2 emissions as well. 
 
-@variable(gen_model, z[G]>=0
-@constraint(gen_model, emission[t in T], sum(z[:,t]) <= 1.5
+The objective will not need to change, since we are still minimizing cost.
+There will not need to be a new variable introduced since emissions are based on production y which is already defined. 
+We need a new constraint concerning the co2 emmissions limit. The yearly emissions cannot exceed the limit of 1.5 Mt CO2. 
+Hence, 365*(sum(y[g,:])*co2_emissions[g]) <= limit
 
 ## Problem 2.2
 
+```julia
+
+using JuMP
+using HiGHS
+
+nsec = 1000; # nse cost [$/MWH]
+limit = 1.5*10^6; #[Mt CO2/yr]
+
+gen_model2 = Model(HiGHS.Optimizer)
+generators = ["geo", "coal", "ccgt", "ct", "wind", "solar"];
+
+G = 1:length(generators);
+T = 1:length(hours);
+
+@variable(gen_model2,x[G]>=0);
+@variable(gen_model2,y[G,T]>=0);
+@variable(gen_model2,n[T]>=0);
+@objective(gen_model2, Min, sum(investment_cost.*x) + 365*(sum(op_cost.*y)+ sum(nsec.*n)));
+
+avail = zeros(6,24);
+avail[1,:] .= thermal_cf[1];
+avail[2,:] .= thermal_cf[2];
+avail[3,:] .= thermal_cf[3];
+avail[4,:] .= thermal_cf[4];
+avail[5,:] = wind_cf;
+avail[6,:] = solar_cf;
+ 
+@constraint(gen_model2, availability[g in G, t in T], y[g,t] <=avail[g,t]*x[g]);
+@constraint(gen_model2, load[t in T], sum(y[:,t]) + n[t] == demand[t]);
+@constraint(gen_model2, emissions[g in G], 365*(sum(y[g,:])*co2_emissions[g]) <= limit);
+set_silent(gen_model2)
+
+```
+
 ## Problem 2.3
+```julia
+
+optimize!(gen_model2)
+objective_value(gen_model2)
+value.(x)
+
+```
+Optimal solution: cost = $934 M
+Utility should build: 0 MW Geothermal, 0 MW Coal, 813 MW CCGT, 1551 MW CT, 2668 MW Wind, 3015 MW Solar
+
+The objective value is slightly higher than problem 1 ($934 M as opposed to $912 M), which makes sense as the generator needs to invest in more renewable utilities like wind and solar to meet the emissions standard.
+Geothermal and Coal are still not used, despite the low (zero) emissions from geothermal. Their investment costs are too high compared to the other sectors. 
+CT is now more utilized than CCGT. 
 
 ## Problem 2.4
+```julia
+
+gen = value.(y).data
+p = plot(gen', label=permutedims(generators), xlabel = "hour", ylabel="generated electricity (MW)")
+
+areaplot(gen', label=permutedims(generators), xlabel = "hour", ylabel="generated electricity (MW)");
+plot!(demand, color=:red, label="demand", linestyle=:dash)
+
+```
+What is different: solar still dominates during the middle of the day, now wind has a larger portion at night/early morning. CT has a larger proportion during the early morning and evening. 
 
 ## Problem 2.5
 
+```julia
+
+using JuMP
+using HiGHS
+
+limit2 = 1.501*10^6 #[MT CO2/yr]
+
+gen_model3 = Model(HiGHS.Optimizer)
+generators = ["geo", "coal", "ccgt", "ct", "wind", "solar"]
+# hours = ["hour 1", "hour 2", "hour 3", "hour 4", "hour 5", "hour 6", "hour 7",  ]
+G = 1:length(generators)
+T = 1:length(hours)
+
+@variable(gen_model3,x[G]>=0);
+@variable(gen_model3,y[G,T]>=0);
+@variable(gen_model3,n[T]>=0);
+@objective(gen_model3, Min, sum(investment_cost.*x) + 365*(sum(op_cost.*y)+ sum(nsec.*n)));
+
+avail = zeros(6,24);
+avail[1,:] .= thermal_cf[1];
+avail[2,:] .= thermal_cf[2];
+avail[3,:] .= thermal_cf[3];
+avail[4,:] .= thermal_cf[4];
+avail[5,:] = wind_cf;
+avail[6,:] = solar_cf;
+ 
+@constraint(gen_model3, availability[g in G, t in T], y[g,t] <=avail[g,t]*x[g]);
+@constraint(gen_model3, load[t in T], sum(y[:,t]) + n[t] == demand[t]);
+@constraint(gen_model3, emissions[g in G], 365*(sum(y[g,:])*co2_emissions[g]) <= limit);
+set_silent(gen_model3)
+
+optimize!(gen_model3)
+objective_value(gen_model3)
+
+```
+
+Allowing the utility to emit an additional 1000 tCO2/yr would save it a negligible amount of money
+
+
 # References
+Worked together with Anne Potter on initial stage of homework. 
